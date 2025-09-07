@@ -4,6 +4,10 @@ import plotly.express as px
 import numpy as np
 import folium
 from streamlit_folium import st_folium
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.multioutput import MultiOutputRegressor
 
 # ----------------------------
 # Streamlit Page Config
@@ -52,21 +56,21 @@ district_coords = {
 # ----------------------------
 def normalize_df(df, filename):
     """Normalize column names and add Year if in filename"""
-    df.columns = df.columns.str.strip().str.replace("\n", " ")
+    df.columns = df.columns.str.strip().str.replace("\n", " ").str.replace(".", "").str.title()
 
-    # Rename standard columns
-    rename_map = {
-        "No of wells Monitored": "Wells_Monitored",
-        "S No": "SNo"
-    }
-    df.rename(columns=rename_map, inplace=True)
+    # Try to find wells column dynamically
+    for col in df.columns:
+        if "Wells" in col and "Monitor" in col:
+            df.rename(columns={col: "Wells_Monitored"}, inplace=True)
+
+    # S No standardization
+    for col in df.columns:
+        if col.lower().startswith("s "):
+            df.rename(columns={col: "SNo"}, inplace=True)
 
     # Extract year from filename
     year = "".join([c for c in filename if c.isdigit()])
-    if year:
-        df["Year"] = int(year)
-    else:
-        df["Year"] = None
+    df["Year"] = int(year) if year else None
 
     # If no lat/long, inject synthetic coords
     if "Latitude" not in df.columns or "Longitude" not in df.columns:
@@ -74,7 +78,6 @@ def normalize_df(df, filename):
         df["Longitude"] = df["District"].map(lambda d: district_coords.get(d, (11.0, 78.0))[1])
 
     return df
-
 
 def calc_stats(df):
     """Basic descriptive stats for water levels"""
@@ -131,30 +134,24 @@ if uploaded_files := st.file_uploader("📂 Upload DWLR Dataset(s) (CSV with sta
         st.plotly_chart(fig_yearly, use_container_width=True)
 
     # ----------------------------
-# Recharge / Decline Patterns
-# ----------------------------
+    # Recharge / Decline Patterns
+    # ----------------------------
     st.subheader("Recharge / Decline Analysis")
-
-# Group by District & Year, compute average minimum level
     yearly_change = (
-    df_filtered.groupby(["District", "Year"])["Minimum"]
-    .mean()
-    .reset_index()
-    .sort_values(["District", "Year"])
+        df_filtered.groupby(["District", "Year"])["Minimum"]
+        .mean()
+        .reset_index()
+        .sort_values(["District", "Year"])
     )
-
-# Compute difference from previous year (Δ Water Level)
     yearly_change["DeltaWL"] = yearly_change.groupby("District")["Minimum"].diff()
 
     if not yearly_change["DeltaWL"].isna().all():
-    # Show table with arrows for quick insights
         trend_table = yearly_change.copy()
         trend_table["Trend"] = trend_table["DeltaWL"].apply(
             lambda x: "⬆️ Recharge" if x > 0 else ("⬇️ Decline" if x < 0 else "➖ Stable")
         )
         st.dataframe(trend_table)
 
-    # Plot recharge/decline per district over years
         fig_delta_year = px.bar(
             yearly_change,
             x="Year",
@@ -199,15 +196,47 @@ if uploaded_files := st.file_uploader("📂 Upload DWLR Dataset(s) (CSV with sta
         st.info("⚠️ No depth range percentage columns found for distribution analysis.")
 
     # ----------------------------
-    # Statewise Summary
+    # Statewide Summary
     # ----------------------------
-    st.subheader("State-wise Water Level Summary")
+    st.subheader("State-wide Water Level Summary")
     if not df_filtered.empty:
         state_summary = df_filtered.groupby("Year")[["Minimum", "Maximum"]].mean().reset_index()
         fig_state = px.line(state_summary, x="Year", y=["Minimum", "Maximum"], markers=True,
-                            title="State-wise Avg Min & Max Water Levels")
+                            title="State-wide Avg Min & Max Water Levels")
         st.plotly_chart(fig_state, use_container_width=True)
 
-#else:
-    #st.info("📂 Please upload DWLR station CSV dataset(s) to begin analysis.")
+    # ----------------------------
+    # Machine Learning Prediction
+    # ----------------------------
+    st.subheader("Predict Water Levels with ML")
 
+    if not df_all.empty:
+        # Encode categorical
+        le_district = LabelEncoder()
+        df_all["District_enc"] = le_district.fit_transform(df_all["District"])
+
+        # Features & Targets
+        #features = ["District_enc", "Year", "Wells_Monitored"]
+        features = ["District_enc", "Year"]
+        X = df_all[features].fillna(0)
+        y = df_all[["Minimum", "Maximum"]].fillna(0)
+
+        # Train/test split
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Train MultiOutput RandomForest
+        model = MultiOutputRegressor(RandomForestRegressor(n_estimators=200, random_state=42))
+        model.fit(X_train, y_train)
+
+        # User Input
+        district_choice = st.selectbox("Select District", df_all["District"].unique())
+        year_choice = st.number_input("Enter Year", min_value=2018, max_value=2050, value=2025)
+        #wells_choice = st.number_input("Enter No of Wells Monitored", min_value=1, value=5)
+
+        district_enc = le_district.transform([district_choice])[0]
+        input_data = [[district_enc, year_choice]]
+
+        if st.button("Predict Water Levels"):
+            pred_min, pred_max = model.predict(input_data)[0]
+            st.success(f"Predicted Minimum Water Level: **{pred_min:.2f} m**")
+            st.success(f"Predicted Maximum Water Level: **{pred_max:.2f} m**")
