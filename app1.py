@@ -199,14 +199,15 @@ if uploaded_files := st.file_uploader("📂 Upload DWLR Dataset(s) (CSV with sta
         st.info("⚠️ No depth range percentage columns found for distribution analysis.")
 
     # ----------------------------
-    # Statewide Summary
+    # Statewise Summary
     # ----------------------------
-    st.subheader("State-wide Water Level Summary")
+    st.subheader("State-wise Water Level Summary")
     if not df_filtered.empty:
         state_summary = df_filtered.groupby("Year")[["Minimum", "Maximum"]].mean().reset_index()
         fig_state = px.line(state_summary, x="Year", y=["Minimum", "Maximum"], markers=True,
-                            title="State-wide Avg Min & Max Water Levels")
+                            title="State-wise Avg Min & Max Water Levels")
         st.plotly_chart(fig_state, use_container_width=True)
 
 #else:
     #st.info("📂 Please upload DWLR station CSV dataset(s) to begin analysis.")
+
